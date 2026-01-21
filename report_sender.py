@@ -225,26 +225,16 @@ class ReportSender:
             # チャンネル名が#で始まる場合はそのまま、そうでない場合はチャンネルIDとして扱う
             channel_param = self.slack_channel.strip()
             
-            # ファイルをアップロード
+            # files_upload_v2の代わりにfiles_uploadを使用（より安定）
+            # チャンネルIDの場合もchannelパラメータに直接渡す
             with open(pdf_path, "rb") as f:
-                if channel_param.startswith('#'):
-                    # チャンネル名の場合
-                    response = self.slack_client.files_upload_v2(
-                        channel=channel_param,
-                        file=f,
-                        filename=pdf_path.name,
-                        title=pdf_path.stem,
-                        initial_comment=message
-                    )
-                else:
-                    # チャンネルIDの場合、channel_idパラメータを使用
-                    response = self.slack_client.files_upload_v2(
-                        channel_id=channel_param,
-                        file=f,
-                        filename=pdf_path.name,
-                        title=pdf_path.stem,
-                        initial_comment=message
-                    )
+                response = self.slack_client.files_upload(
+                    channels=channel_param,
+                    file=f,
+                    filename=pdf_path.name,
+                    title=pdf_path.stem,
+                    initial_comment=message
+                )
             
             print(f"✅ Slackに送信しました: {response['file']['name']}")
             
