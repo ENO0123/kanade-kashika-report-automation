@@ -221,20 +221,37 @@ class ReportSender:
             
             print(f"Slackに送信中: {self.slack_channel}")
             
+            # チャンネルIDを正しく処理
+            # チャンネル名が#で始まる場合はそのまま、そうでない場合はチャンネルIDとして扱う
+            channel_param = self.slack_channel.strip()
+            
             # ファイルをアップロード
             with open(pdf_path, "rb") as f:
-                response = self.slack_client.files_upload_v2(
-                    channel=self.slack_channel,
-                    file=f,
-                    filename=pdf_path.name,
-                    title=pdf_path.stem,
-                    initial_comment=message
-                )
+                if channel_param.startswith('#'):
+                    # チャンネル名の場合
+                    response = self.slack_client.files_upload_v2(
+                        channel=channel_param,
+                        file=f,
+                        filename=pdf_path.name,
+                        title=pdf_path.stem,
+                        initial_comment=message
+                    )
+                else:
+                    # チャンネルIDの場合、channel_idパラメータを使用
+                    response = self.slack_client.files_upload_v2(
+                        channel_id=channel_param,
+                        file=f,
+                        filename=pdf_path.name,
+                        title=pdf_path.stem,
+                        initial_comment=message
+                    )
             
             print(f"✅ Slackに送信しました: {response['file']['name']}")
             
         except SlackApiError as e:
             print(f"❌ Slack APIエラー: {e.response['error']}")
+            if 'response_metadata' in e.response:
+                print(f"詳細: {e.response['response_metadata']}")
             raise
         except Exception as e:
             print(f"❌ エラーが発生しました: {str(e)}")
