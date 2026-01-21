@@ -1,0 +1,41 @@
+name: Weekly Looker Studio Report
+
+on:
+  schedule:
+    # 毎週月曜日の午前9時（JST）に実行
+    # UTC時間で設定（JSTはUTC+9なので、月曜日00:00 UTC = 月曜日09:00 JST）
+    - cron: '0 0 * * 1'
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Install Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+      
+      - name: Send report to Slack
+        env:
+          LOOKER_STUDIO_URL: ${{ secrets.LOOKER_STUDIO_URL }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ENABLE_AI_ANALYSIS: ${{ secrets.ENABLE_AI_ANALYSIS || 'true' }}
+        run: |
+          python report_sender.py
