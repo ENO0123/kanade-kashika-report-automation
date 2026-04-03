@@ -1,0 +1,98 @@
+name: 🚀 Deploy
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'デプロイ先'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - vercel
+          - railway
+      environment:
+        description: '環境'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - preview
+      message:
+        description: 'デプロイコメント（任意）'
+        required: false
+        type: string
+
+jobs:
+  # ─── Vercel へのデプロイ ───────────────────────────────────────────
+  deploy-vercel:
+    name: Deploy to Vercel
+    runs-on: ubuntu-latest
+    if: |
+      (github.event.inputs.target == 'vercel' || github.event.inputs.target == 'auto' || github.event_name == 'push')
+      && (vars.DEPLOY_TARGET == 'vercel' || vars.DEPLOY_TARGET == '' || vars.DEPLOY_TARGET == null)
+      && secrets.VERCEL_TOKEN != ''
+    environment:
+      name: ${{ github.event.inputs.environment || 'production' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Pull Vercel Environment Info
+        run: vercel pull --yes --environment=${{ github.event.inputs.environment || 'production' }} --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build Project
+        run: vercel build ${{ (github.event.inputs.environment == 'production' || github.event_name == 'push') && '--prod' || '' }} --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy to Vercel
+        id: deploy
+        run: |
+          URL=$(vercel deploy --prebuilt ${{ (github.event.inputs.environment == 'production' || github.event_name == 'push') && '--prod' || '' }} --token=${{ secrets.VERCEL_TOKEN }})
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "✅ Deployed to: $URL"
+
+      - name: Comment on Deploy
+        if: github.event.inputs.message != ''
+        run: echo "📝 Comment: ${{ github.event.inputs.message }}"
+
+  # ─── Railway へのデプロイ ─────────────────────────────────────────
+  deploy-railway:
+    name: Deploy to Railway
+    runs-on: ubuntu-latest
+    if: |
+      (github.event.inputs.target == 'railway' || github.event.inputs.target == 'auto' || github.event_name == 'push')
+      && vars.DEPLOY_TARGET == 'railway'
+      && secrets.RAILWAY_TOKEN != ''
+    environment:
+      name: ${{ github.event.inputs.environment || 'production' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        run: |
+          railway up \
+            ${{ secrets.RAILWAY_SERVICE_ID != '' && format('--service {0}', secrets.RAILWAY_SERVICE_ID) || '' }} \
+            --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Comment on Deploy
+        if: github.event.inputs.message != ''
+        run: echo "📝 Comment: ${{ github.event.inputs.message }}"
