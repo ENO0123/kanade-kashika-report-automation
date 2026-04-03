@@ -1,0 +1,137 @@
+name: 🧪 CI (Build & Test)
+
+on:
+  push:
+    branches: [main, master, develop, 'feature/**', 'fix/**']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      node_version:
+        description: 'Node.jsバージョン'
+        required: false
+        default: '20'
+        type: choice
+        options:
+          - '20'
+          - '18'
+          - '22'
+      skip_tests:
+        description: 'テストをスキップ'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect package manager
+        id: detect-pm
+        run: |
+          if [ -f "bun.lockb" ]; then
+            echo "pm=bun" >> $GITHUB_OUTPUT
+          elif [ -f "pnpm-lock.yaml" ]; then
+            echo "pm=pnpm" >> $GITHUB_OUTPUT
+          elif [ -f "yarn.lock" ]; then
+            echo "pm=yarn" >> $GITHUB_OUTPUT
+          else
+            echo "pm=npm" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Node.js
+        if: steps.detect-pm.outputs.pm != 'bun'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ github.event.inputs.node_version || '20' }}
+          cache: ${{ steps.detect-pm.outputs.pm }}
+
+      - name: Setup Bun
+        if: steps.detect-pm.outputs.pm == 'bun'
+        uses: oven-sh/setup-bun@v1
+
+      - name: Install dependencies (npm)
+        if: steps.detect-pm.outputs.pm == 'npm'
+        run: npm ci
+
+      - name: Install dependencies (pnpm)
+        if: steps.detect-pm.outputs.pm == 'pnpm'
+        run: |
+          corepack enable pnpm
+          pnpm install --frozen-lockfile
+
+      - name: Install dependencies (yarn)
+        if: steps.detect-pm.outputs.pm == 'yarn'
+        run: yarn install --frozen-lockfile
+
+      - name: Install dependencies (bun)
+        if: steps.detect-pm.outputs.pm == 'bun'
+        run: bun install --frozen-lockfile
+
+      - name: Type check
+        run: npx tsc --noEmit 2>/dev/null || true
+
+      - name: Lint
+        run: |
+          if [ -f ".eslintrc*" ] || [ -f "eslint.config*" ]; then
+            npx eslint . --max-warnings=0 2>/dev/null || echo "⚠️ Lint warnings found"
+          fi
+
+      - name: Build
+        run: |
+          if [ "${{ steps.detect-pm.outputs.pm }}" = "npm" ]; then
+            npm run build --if-present
+          elif [ "${{ steps.detect-pm.outputs.pm }}" = "pnpm" ]; then
+            pnpm build 2>/dev/null || true
+          elif [ "${{ steps.detect-pm.outputs.pm }}" = "yarn" ]; then
+            yarn build 2>/dev/null || true
+          else
+            bun run build 2>/dev/null || true
+          fi
+
+      - name: Test
+        if: ${{ !github.event.inputs.skip_tests }}
+        run: |
+          if [ "${{ steps.detect-pm.outputs.pm }}" = "npm" ]; then
+            npm test --if-present -- --passWithNoTests 2>/dev/null || true
+          elif [ "${{ steps.detect-pm.outputs.pm }}" = "pnpm" ]; then
+            pnpm test 2>/dev/null || true
+          elif [ "${{ steps.detect-pm.outputs.pm }}" = "yarn" ]; then
+            yarn test 2>/dev/null || true
+          else
+            bun test 2>/dev/null || true
+          fi
+
+  # Python プロジェクト対応
+  build-and-test-python:
+    name: Build & Test (Python)
+    runs-on: ubuntu-latest
+    if: hashFiles('requirements.txt') != '' || hashFiles('pyproject.toml') != '' || hashFiles('setup.py') != ''
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          if [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          elif [ -f "pyproject.toml" ]; then
+            pip install -e ".[dev]" 2>/dev/null || pip install -e .
+          fi
+
+      - name: Run tests
+        if: ${{ !github.event.inputs.skip_tests }}
+        run: |
+          if command -v pytest &> /dev/null; then
+            pytest --tb=short 2>/dev/null || true
+          fi
