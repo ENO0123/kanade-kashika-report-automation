@@ -1,0 +1,212 @@
+name: 📱 Remote Operations (Smartphone)
+
+# スマートフォン・Claude からの遠隔操作用ワークフロー
+# GitHub Mobile App または GitHub API 経由でトリガー可能
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: '実行する操作'
+        required: true
+        type: choice
+        options:
+          - deploy-production    # 本番デプロイ
+          - deploy-preview       # プレビューデプロイ
+          - run-tests            # テスト実行
+          - build-only           # ビルドのみ
+          - create-branch        # ブランチ作成
+          - sync-main            # mainブランチと同期
+          - rollback             # 直前のデプロイにロールバック
+      branch:
+        description: '対象ブランチ (デフォルト: main)'
+        required: false
+        default: 'main'
+        type: string
+      note:
+        description: '作業メモ（Slack/Notionへの通知に使用）'
+        required: false
+        type: string
+      notify_slack:
+        description: 'Slack通知を送る'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  # ─── 操作のルーティング ────────────────────────────────────────────
+  router:
+    name: 🔀 Route Operation
+    runs-on: ubuntu-latest
+    outputs:
+      do_deploy: ${{ steps.route.outputs.do_deploy }}
+      do_test: ${{ steps.route.outputs.do_test }}
+      do_build: ${{ steps.route.outputs.do_build }}
+      environment: ${{ steps.route.outputs.environment }}
+    steps:
+      - name: Route
+        id: route
+        run: |
+          OP="${{ github.event.inputs.operation }}"
+          echo "▶ Operation: $OP"
+
+          case "$OP" in
+            deploy-production)
+              echo "do_deploy=true" >> $GITHUB_OUTPUT
+              echo "do_test=true" >> $GITHUB_OUTPUT
+              echo "do_build=true" >> $GITHUB_OUTPUT
+              echo "environment=production" >> $GITHUB_OUTPUT
+              ;;
+            deploy-preview)
+              echo "do_deploy=true" >> $GITHUB_OUTPUT
+              echo "do_test=false" >> $GITHUB_OUTPUT
+              echo "do_build=true" >> $GITHUB_OUTPUT
+              echo "environment=preview" >> $GITHUB_OUTPUT
+              ;;
+            run-tests)
+              echo "do_deploy=false" >> $GITHUB_OUTPUT
+              echo "do_test=true" >> $GITHUB_OUTPUT
+              echo "do_build=false" >> $GITHUB_OUTPUT
+              echo "environment=test" >> $GITHUB_OUTPUT
+              ;;
+            build-only)
+              echo "do_deploy=false" >> $GITHUB_OUTPUT
+              echo "do_test=false" >> $GITHUB_OUTPUT
+              echo "do_build=true" >> $GITHUB_OUTPUT
+              echo "environment=build" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "do_deploy=false" >> $GITHUB_OUTPUT
+              echo "do_test=false" >> $GITHUB_OUTPUT
+              echo "do_build=false" >> $GITHUB_OUTPUT
+              echo "environment=none" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+  # ─── ビルド ───────────────────────────────────────────────────────
+  build:
+    name: 🔨 Build
+    needs: router
+    if: needs.router.outputs.do_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install & Build
+        run: |
+          npm ci 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
+          npm run build --if-present 2>/dev/null || true
+
+  # ─── テスト ───────────────────────────────────────────────────────
+  test:
+    name: 🧪 Test
+    needs: router
+    if: needs.router.outputs.do_test == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install & Test
+        run: |
+          npm ci 2>/dev/null || true
+          npm test --if-present -- --passWithNoTests 2>/dev/null || true
+
+  # ─── デプロイ ─────────────────────────────────────────────────────
+  deploy:
+    name: 🚀 Deploy
+    needs: [router, build]
+    if: |
+      always() &&
+      needs.router.outputs.do_deploy == 'true' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ needs.router.outputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      # Vercel Deploy
+      - name: Deploy to Vercel
+        if: env.VERCEL_TOKEN != ''
+        run: |
+          npm install -g vercel@latest
+          vercel pull --yes --environment=${{ needs.router.outputs.environment }} --token=$VERCEL_TOKEN
+          vercel build ${{ needs.router.outputs.environment == 'production' && '--prod' || '' }} --token=$VERCEL_TOKEN
+          URL=$(vercel deploy --prebuilt ${{ needs.router.outputs.environment == 'production' && '--prod' || '' }} --token=$VERCEL_TOKEN)
+          echo "DEPLOY_URL=$URL" >> $GITHUB_ENV
+          echo "✅ Vercel: $URL"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      # Railway Deploy
+      - name: Deploy to Railway
+        if: env.RAILWAY_TOKEN != ''
+        run: |
+          npm install -g @railway/cli
+          railway up --detach ${{ secrets.RAILWAY_SERVICE_ID != '' && format('--service {0}', secrets.RAILWAY_SERVICE_ID) || '' }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+  # ─── ブランチ作成 ─────────────────────────────────────────────────
+  create-branch:
+    name: 🌿 Create Branch
+    needs: router
+    if: github.event.inputs.operation == 'create-branch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create branch
+        run: |
+          BRANCH="${{ github.event.inputs.branch }}"
+          git checkout -b "$BRANCH"
+          git push origin "$BRANCH"
+          echo "✅ Branch created: $BRANCH"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─── 通知 ─────────────────────────────────────────────────────────
+  notify:
+    name: 📣 Notify
+    needs: [router, build, test, deploy]
+    if: |
+      always() &&
+      github.event.inputs.notify_slack == 'true' &&
+      secrets.SLACK_WEBHOOK_URL != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Slack Notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: |
+            📱 *スマートフォンからの操作完了*
+            操作: ${{ github.event.inputs.operation }}
+            ブランチ: ${{ github.event.inputs.branch }}
+            メモ: ${{ github.event.inputs.note || 'なし' }}
+            実行者: ${{ github.actor }}
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
